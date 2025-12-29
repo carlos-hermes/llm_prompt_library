@@ -1,0 +1,387 @@
+You are an expert full‑stack builder specialized in creating high‑performance estimating tools.
+
+Your task is to generate a complete renovation cost estimating web application based on the following variable parameters, data model, and UX patterns. This prompt is a TEMPLATE; bracketed values like [RENOVATION_COMPANY_NAME] and [PRICING_TABLE_NAME] must remain configurable and not hardcoded.
+
+==================================================
+🎯 PURPOSE
+==================================================
+Build an estimating tool that enables [RENOVATION_COMPANY_NAME] to create, manage, and export renovation cost estimates for [BUILDING_TYPE] projects (e.g. hotels, apartments, offices) using pricing data uploaded via CSV by an admin role.
+
+==================================================
+📌 IMPLEMENTATION PRIORITIES (ORDERED)
+==================================================
+If tradeoffs are required, follow this priority stack:
+
+1) Correct data model and CSV‑driven pricing as the single source of truth.
+2) Accurate calculation engine, markups, and threshold logic.
+3) Robust estimate CRUD and export (PDF + CSV/Excel).
+4) Clear, professional UX (layout, sticky footer, charts, theming).
+
+Never violate (1) or (2) to optimize lower‑priority items.
+
+==================================================
+🧩 CORE MODULES (MANDATORY)
+==================================================
+
+1) Authentication & Roles
+- Email/password authentication with persistent sessions.
+- Roles: "admin", "estimator", "viewer".
+- Row‑level security (RLS) so users can only access their own projects.
+- Admin‑only access to pricing import, configuration, and audit views.
+
+2) Project Setup & Metadata (/estimate)
+Create a main estimate page `/estimate` with a primary "Project Setup" panel:
+
+- Inputs:
+  - Project Name
+  - Client Name
+  - Project Location
+  - Estimate Date (auto‑populated, read‑only)
+  - Start Date (date picker)
+  - Estimated Duration (days) → auto‑calculated Finish Date
+  - Building Type: selectable, defaults to [BUILDING_TYPE]
+  - Unit configuration:
+    - Total [UNIT_TERM] count (e.g. rooms, apartments)
+    - Optional sub‑types (e.g. King vs Double Queen, or other configuration based on [BUILDING_TYPE])
+    - Derived counts as needed (e.g. total beds = King + 2 × Double Queen for hotel use case)
+  - Renovation Type: select from [RENOVATION_TYPE_OPTIONS] (e.g. Soft, Full, Custom)
+  - Areas Included: multi‑select checkboxes (Guest Room, Bathroom, Corridor, Lobby, etc., configurable per deployment)
+  - Notes / Assumptions: multiline text area
+
+- Behavior:
+  - Changes to unit counts or configuration recalculate line item quantities in real time where appropriate.
+  - All metadata is saved in the `projects` table.
+
+3) CSV‑Driven Pricing Data (Single Source of Truth)
+Pricing MUST NOT be hardcoded in the frontend or backend business logic. All pricing and line‑item configuration comes from a Supabase table populated via CSV upload by an admin.
+
+- Primary pricing table: `[PRICING_TABLE_NAME]` (e.g. `pricing_guide_items`).
+- `[PRICING_TABLE_NAME]` is the single source of truth for all line items and unit prices.
+
+Admin import flow:
+- Dedicated page `/admin/pricing-import` (admin‑only).
+- CSV upload UI with:
+  - File size limit (e.g. 10MB).
+  - Reasonable record limit (e.g. 50,000 rows).
+  - Required column validation.
+
+CSV behavior:
+- Validate header row:
+  - If required columns are missing, reject the file with a clear error.
+- Validate each row:
+  - If a row is invalid (missing required values, wrong types), skip it, log it, and show a summary: “X rows imported, Y rows skipped.”
+- Upsert:
+  - Upsert into `[PRICING_TABLE_NAME]` keyed by `item_code` (or a configurable key) to allow updates without duplicates.
+
+Example columns (generic and extensible):
+- id
+- building_type
+- area / category
+- item_code
+- item_name / description
+- cost_type (labor | material | other)
+- unit_of_measure (per_unit, per_[UNIT_TERM], per_bed, lump_sum, etc.)
+- default_quantity_factor (for auto‑scaling by units/keys/beds)
+- unit_price
+- tier / brand / scope tags (e.g. standard, premium, soft_reno, full_reno)
+- active (boolean)
+- created_at / updated_at
+
+Estimate UI use:
+- The estimate UI loads line items only from `[PRICING_TABLE_NAME]`.
+- Filter items based on:
+  - [BUILDING_TYPE]
+  - [RENOVATION_TYPE_OPTIONS]
+  - selected areas
+  - optional tier/brand/scope tags.
+
+4) Scope & Line Item Management (/estimate, center panel)
+Create a central panel on `/estimate` for scope and line item selection:
+
+- Loading:
+  - Load items dynamically from `[PRICING_TABLE_NAME]` when:
+    - building type, renovation type, tier/brand, or areas change.
+
+- Grouping & selection:
+  - Group line items by area/category in collapsible sections.
+  - Each row shows:
+    - Checkbox (selected / not selected)
+    - Item description
+    - Cost type badge (Labor / Material)
+    - Unit price (editable inline)
+    - Quantity
+    - Total (unit_price × quantity)
+  - Bulk select/deselect per area.
+  - Optional auto‑selection:
+    - Use scope tags (e.g. soft/full) to auto‑select relevant items based on renovation type and selected areas.
+
+- Quantity logic:
+  - Items priced per [UNIT_TERM] scale with total units.
+  - Items priced per bed or similar use derived counts.
+  - Lump sum items allow manual quantity editing.
+  - When units or configuration change, recompute dependent quantities safely (handle zero units gracefully).
+
+5) Cost Configuration & Markups (/estimate, left panel)
+Create a "Cost Configuration" section:
+
+- Percentage fields (examples, configurable):
+  - GC Overhead (%)
+  - GC Profit (%)
+  - Contingency (%)
+  - Taxes (%)
+  - Procurement Fee (%)
+  - Shipping & Logistics (%)
+  - Design Fees (%)
+
+- Behavior:
+  - Default values come from persisted configuration (see Config section below).
+  - Each field has helper text or tooltips describing intended use.
+  - Markups are applied to base cost (labor + material) in a clear, consistent order.
+  - Allow future extension with additional percentage or lump‑sum adders.
+
+6) Cost Engine, Thresholds & Heuristics
+Implement the cost engine in code (not as user‑editable formulas):
+
+Core calculations:
+- base_labor_cost = sum(selected labor items)
+- base_material_cost = sum(selected material items)
+- base_cost = base_labor_cost + base_material_cost
+- total_adders = base_cost × (sum of all percentage markups)
+- total_cost = base_cost + total_adders
+- cost_per_unit = total_cost / total_units (handle total_units = 0 by showing 0 or “N/A” safely)
+- labor_cost_per_unit = base_labor_cost / total_units (same zero‑handling)
+
+Thresholds:
+- Initial default parameters:
+  - `[LABOR_THRESHOLD_SOFT]` per [UNIT_TERM] for soft renovation.
+  - `[LABOR_THRESHOLD_FULL]` per [UNIT_TERM] for full renovation.
+- The active threshold is chosen based on renovation type.
+- Display:
+  - Status text such as "Within Threshold" or "Exceeds Threshold".
+  - Color and icon (green if within, red if exceeded).
+- Persist the current thresholds in configuration so admins can adjust them.
+
+Optional FF&E / Consumables heuristics:
+- Initial defaults:
+  - `[CONSUMABLES_PER_UNIT_SOFT]`
+  - `[CONSUMABLES_PER_UNIT_FULL]`
+- Example behavior:
+  - consumables_total = total_units × consumables_per_unit (based on renovation type).
+  - ff_and_e_budget = max(base_material_cost − consumables_total, 0).
+  - ff_and_e_per_unit = ff_and_e_budget / total_units (handle zero).
+
+7) Cost Summary Dashboard (/estimate, right panel)
+Create a right‑side "Summary" panel with:
+
+- Project summary:
+  - Show project name, client, building type, units, renovation type, main dates, and areas.
+
+- Cost breakdown:
+  - Base labor cost
+  - Base material cost
+  - Each markup line item: name, percentage, and dollar amount
+  - Total cost
+  - Cost per [UNIT_TERM]
+  - Labor cost per [UNIT_TERM] with threshold status (color‑coded).
+
+- Visualization:
+  - A chart (pie or bar) showing base cost by area/category.
+  - Optionally show labor vs material split.
+
+8) Sticky Cost Footer
+Implement a sticky footer visible at all times:
+
+- Displays:
+  - Total cost
+  - Cost per [UNIT_TERM]
+  - Labor cost per [UNIT_TERM] (color‑coded by threshold status)
+  - Total [UNIT_TERM] count
+  - "Generate PDF" button
+- Behavior:
+  - Update in real time as the estimate changes.
+  - PDF button triggers a branded PDF export.
+
+9) Estimate Management (CRUD)
+Support full estimate lifecycle:
+
+- New Estimate:
+  - Clear the form and reset state.
+
+- Save Estimate:
+  - Insert or update records in `projects` and `project_line_items`.
+  - Require a project name.
+  - Store snapshots of line item data (prices, descriptions) so historical estimates remain stable even if pricing changes later.
+
+- Load / My Estimates:
+  - Dialog or page listing user’s estimates (sortable by date, name, cost).
+  - Loading an estimate repopulates all fields and selections.
+
+- Duplicate:
+  - "Duplicate Estimate" clones a project and its line items into a new record.
+
+- Delete:
+  - Delete with confirmation; soft delete is acceptable if easier.
+
+10) Export: PDF & CSV/Excel
+Implement export features:
+
+- PDF:
+  - Use `[LOGO_URL]` and [RENOVATION_COMPANY_NAME] in header.
+  - Include:
+    - Project info and metadata
+    - Selected line items table (with quantities, unit prices, totals)
+    - Cost breakdown and markups
+    - Threshold status
+    - FF&E / consumables section if enabled
+    - Notes/assumptions
+  - Filename format: `[PROJECT_NAME]_[ESTIMATE_DATE].pdf`.
+
+- CSV/Excel:
+  - Export selected line items and key cost metrics for external analysis.
+
+11) Admin Features & Audit Logs (/admin)
+Create an `/admin` area for admins:
+
+- Pricing Import:
+  - Use `/admin/pricing-import` as described above.
+
+- Configuration management:
+  - Simple UI to edit:
+    - Default markup percentages.
+    - Thresholds per renovation type.
+    - Allowed building types, areas, and renovation types.
+  - Persist these in a `settings` or `config` table and always read from there.
+
+- Audit logs:
+  - Log key events (pricing imports, settings changes) to an `audit_logs` table.
+
+==================================================
+📊 META SCHEMA (GUIDANCE)
+==================================================
+Use Supabase as the backend. Implement at least these tables (names configurable via template variables):
+
+- `projects`
+  - id (uuid, pk)
+  - user_id (fk to auth users)
+  - project_name
+  - client_name
+  - location
+  - building_type
+  - total_units
+  - unit_configuration_json
+  - renovation_type
+  - areas_included (array or text)
+  - estimate_date
+  - start_date
+  - finish_date
+  - duration_days
+  - percentages_json (store markup values used)
+  - thresholds_used_json
+  - notes
+  - created_at / updated_at
+
+- `project_line_items`
+  - id (uuid, pk)
+  - project_id (fk to projects)
+  - pricing_item_id (fk to [PRICING_TABLE_NAME])
+  - description_snapshot
+  - cost_type_snapshot
+  - unit_price_snapshot
+  - quantity
+  - total_cost_snapshot
+  - created_at / updated_at
+
+- `[PRICING_TABLE_NAME]` (e.g. pricing_guide_items)
+  - id (uuid or bigint, pk)
+  - building_type
+  - area
+  - item_code
+  - item_name
+  - description
+  - cost_type (labor | material | other)
+  - unit_of_measure
+  - default_quantity_factor
+  - unit_price
+  - tier / brand / scope_tags
+  - active (boolean)
+  - created_at / updated_at
+
+- `user_roles`
+  - user_id
+  - role (admin | estimator | viewer)
+
+- `audit_logs`
+  - id
+  - user_id
+  - action_type
+  - entity
+  - payload_json
+  - created_at
+
+- `settings` or `config`
+  - id
+  - key
+  - value_json
+  - created_at / updated_at
+
+Apply RLS so:
+- Users see only their own projects.
+- Admin‑only operations (pricing import, config changes) are restricted to `user_roles.role = 'admin'`.
+
+==================================================
+🎨 DESIGN & APPEARANCE
+==================================================
+- Tech stack: React + TypeScript + Tailwind CSS.
+- Use shadcn/ui or Radix UI for inputs, dialogs, tables, and forms.
+- Layout for `/estimate`:
+  - Left panel: Project setup + cost configuration.
+  - Center panel: Line items grouped by area.
+  - Right panel: Summary and charts.
+
+- Theme:
+  - Primary color derived from `[PRIMARY_COLOR]`.
+  - Show `[LOGO_URL]` in the header and in PDF exports.
+
+- UX:
+  - Sticky footer with cost KPIs and PDF button.
+  - Use toasts/snackbars for save, load, import, and error feedback.
+  - Show clear loading, empty, and error states for pricing data.
+
+==================================================
+⚙️ CONFIGURATION VS DEFAULTS
+==================================================
+Treat bracketed values as initial defaults, not hardcoded constants:
+
+- [RENOVATION_COMPANY_NAME], [BUILDING_TYPE], [UNIT_TERM], [RENOVATION_TYPE_OPTIONS], [PRIMARY_COLOR], [LOGO_URL] can be set via configuration file or environment variables.
+- Thresholds and default markups ([LABOR_THRESHOLD_SOFT], [LABOR_THRESHOLD_FULL], [CONSUMABLES_PER_UNIT_SOFT], [CONSUMABLES_PER_UNIT_FULL]) should be stored in the `settings`/`config` table and editable via the admin UI.
+
+The UI and logic should always read from persisted configuration, not hardcoded values.
+
+==================================================
+🚫 HARD‑CODING RULE
+==================================================
+Never hardcode pricing, thresholds, or client‑specific labels in business logic.
+
+- All line item prices and attributes come from `[PRICING_TABLE_NAME]`.
+- Project data comes from `projects` and `project_line_items`.
+- Thresholds and default markups come from the configuration layer (`settings`/`config` table or equivalent).
+- Bracketed variables are template parameters; do NOT bake them in as literals inside the app.
+
+==================================================
+🧩 TEMPLATE REQUIREMENT
+==================================================
+This prompt is a reusable template. Ensure all bracketed variables remain configurable:
+
+- [RENOVATION_COMPANY_NAME]
+- [BUILDING_TYPE]
+- [UNIT_TERM]
+- [RENOVATION_TYPE_OPTIONS]
+- [PRICING_TABLE_NAME]
+- [LABOR_THRESHOLD_SOFT]
+- [LABOR_THRESHOLD_FULL]
+- [CONSUMABLES_PER_UNIT_SOFT]
+- [CONSUMABLES_PER_UNIT_FULL]
+- [PRIMARY_COLOR]
+- [LOGO_URL]
+
+Structure the app so these values can be adjusted via configuration without rewriting core logic.
